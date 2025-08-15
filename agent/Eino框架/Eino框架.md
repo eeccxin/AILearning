@@ -23,6 +23,102 @@ Eino 框架由以下几个部分组成，其中Eino为核心框架逻辑，包�
 
  
 
+## 介绍视频
+
+> [编排优先——Go 语言开发 AI 智能体的设计与实现-沈桐](https://www.bilibili.com/video/BV186Z7YQEhU/)
+>
+> 2025 年 1 月，基于 Golang 的大模型应用综合开发框架 Eino 在 CloudWeGo 正式开源。Eino 基于明确的“组件”定义，提供强大的流程“编排”，覆盖开发全流程，旨在帮助开发者以最快的速度实现最有深度的大模型应用。目前，Eino 已成为字节跳动内部大模型应用的首选全代码开发框架，已有包括豆包、抖音、扣子等多条业务线、数百个服务接入使用。 本次演讲分享了 Eino 的技术实践，展示大模型与微服务如何深度融合，为开发者提供高效、稳定的“AI+微服务”一体化解决方案。
+
+
+
+<img src="Eino框架.assets\image-20250815174535195.png" alt="image-20250815174535195" style="zoom:50%;" />
+
+
+
+<img src="Eino框架.assets\image-20250815174606140.png" alt="image-20250815174606140" style="zoom:50%;" />
+
+
+
+> 组件
+
+<img src="Eino框架.assets\image-20250815174741789.png" alt="image-20250815174741789" style="zoom:50%;" />
+
+
+
+Retriever 知识库
+
+
+
+> 编排
+
+<img src="Eino框架.assets\image-20250815174911195.png" alt="image-20250815174911195" style="zoom:50%;" />
+
+
+
+> 数据流处理
+
+<img src="Eino框架.assets\image-20250815175138614.png" alt="image-20250815175138614" style="zoom:50%;" />
+
+
+
+
+
+
+
+> 架构图
+
+![image-20250815175413902](Eino框架.assets\image-20250815175413902.png)
+
+==》 compose 组件使用
+
+
+
+> 需求例子
+
+<img src="Eino框架.assets\image-20250815175630957.png" alt="image-20250815175630957" style="zoom:50%;" />
+
+
+
+<img src="Eino框架.assets\image-20250815175724946.png" alt="image-20250815175724946" style="zoom:50%;" />
+
+
+
+<img src="Eino框架.assets\image-20250815175754851.png" alt="image-20250815175754851" style="zoom:50%;" />
+
+
+
+<img src="Eino框架.assets\image-20250815180001999.png" alt="image-20250815180001999" style="zoom:50%;" />
+
+<img src="Eino框架.assets\image-20250815180050521.png" alt="image-20250815180050521" style="zoom:50%;" />
+
+==》主要先看下compose 编排。。
+
+RAG能力。。（知识库）
+
+
+
+<img src="Eino框架.assets\image-20250815180234818.png" alt="image-20250815180234818" style="zoom:50%;" />
+
+<img src="Eino框架.assets\image-20250815180322389.png" alt="image-20250815180322389" style="zoom:50%;" />
+
+<img src="Eino框架.assets\image-20250815180349324.png" alt="image-20250815180349324" style="zoom:50%;" />
+
+<img src="Eino框架.assets\image-20250815180407867.png" alt="image-20250815180407867" style="zoom:50%;" />
+
+
+
+> 03 现状
+
+<img src="Eino框架.assets\image-20250815180447135.png" alt="image-20250815180447135" style="zoom:50%;" />
+
+
+
+
+
+
+
+
+
 
 
 # Eino: 概述
@@ -967,6 +1063,8 @@ Agent 是 AI 技术发展的重要方向。它不仅能够理解用户意图，�
 
 
 
+
+# Eino：核心模块
 
 
 

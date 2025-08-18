@@ -1066,6 +1066,1051 @@ Agent 是 AI 技术发展的重要方向。它不仅能够理解用户意图，�
 
 # Eino：核心模块
 
+## Components 组件
+
+### ChatModel 使用说明
+
+#### 基本介绍
+
+Model 组件是一个用于与大语言模型交互的组件。它的主要作用是将用户的输入消息发送给语言模型，并获取模型的响应。这个组件在以下场景中发挥重要作用：
+
+- 自然语言对话
+- 文本生成和补全
+- 工具调用的参数生成
+- 多模态交互（文本、图片、音频等）
+
+
+
+#### 组件定义
+
+##### 接口定义
+
+> 代码位置：eino/components/model/interface.go
+
+```go
+type BaseChatModel interface {
+    Generate(ctx context.Context, input []*schema.Message, opts ...Option) (*schema.Message, error)
+    Stream(ctx context.Context, input []*schema.Message, opts ...Option) (
+        *schema.StreamReader[*schema.Message], error)
+}
+
+type ToolCallingChatModel interface {
+    BaseChatModel
+
+    // WithTools returns a new ToolCallingChatModel instance with the specified tools bound.
+    // This method does not modify the current instance, making it safer for concurrent use.
+    WithTools(tools []*schema.ToolInfo) (ToolCallingChatModel, error)
+}
+```
+
+> Generate 方法
+
+- 功能：生成完整的模型响应
+
+- 参数：
+
+  - ctx：上下文对象，用于传递请求级别的信息，同时也用于传递 Callback Manager
+  - input：输入消息列表
+  - opts：可选参数，用于配置模型行为
+
+- 返回值：
+
+  - `*schema.Message`：模型生成的响应消息
+  - error：生成过程中的错误信息
+
+  
+
+> Stream 方法
+
+- 功能：以流式方式生成模型响应
+
+- 参数：与 Generate 方法相同
+
+- 返回值：
+
+  - `*schema.StreamReader[*schema.Message]`：模型响应的流式读取器
+  - error：生成过程中的错误信息
+
+  
+
+> WithTools 方法
+
+- 功能：为模型绑定可用的工具
+- 参数：
+  - tools：工具信息列表
+- 返回值：
+  - ToolCallingChatModel: 绑定了 tools 后的 chatmodel
+  - error：绑定过程中的错误信息
+
+
+
+##### Message 结构体
+
+> 代码位置：eino/schema/message.go
+
+```go
+type Message struct {
+    // Role 表示消息的角色（system/user/assistant/tool）
+    Role RoleType
+    // Content 是消息的文本内容
+    Content string
+    // MultiContent 是多模态内容，支持文本、图片、音频等
+    MultiContent []ChatMessagePart
+    // Name 是消息的发送者名称
+    Name string
+    // ToolCalls 是 assistant 消息中的工具调用信息
+    ToolCalls []ToolCall
+    // ToolCallID 是 tool 消息的工具调用 ID
+    ToolCallID string
+    // ResponseMeta 包含响应的元信息
+    ResponseMeta *ResponseMeta
+    // Extra 用于存储额外信息
+    Extra map[string]any
+}
+
+
+type ChatMessagePart struct {
+	// Type is the type of the part, eg. "text", "image_url", "audio_url", "video_url", "file_url".
+	Type ChatMessagePartType `json:"type,omitempty"`
+
+	// Text is the text of the part, it's used when Type is "text".
+	Text string `json:"text,omitempty"`
+
+	// ImageURL is the image url of the part, it's used when Type is "image_url".
+	ImageURL *ChatMessageImageURL `json:"image_url,omitempty"`
+	// AudioURL is the audio url of the part, it's used when Type is "audio_url".
+	AudioURL *ChatMessageAudioURL `json:"audio_url,omitempty"`
+	// VideoURL is the video url of the part, it's used when Type is "video_url".
+	VideoURL *ChatMessageVideoURL `json:"video_url,omitempty"`
+	// FileURL is the file url of the part, it's used when Type is "file_url".
+	FileURL *ChatMessageFileURL `json:"file_url,omitempty"`
+}
+
+// ResponseMeta collects meta information about a chat response.
+type ResponseMeta struct {
+	// FinishReason is the reason why the chat response is finished.
+	// It's usually "stop", "length", "tool_calls", "content_filter", "null". This is defined by chat model implementation.
+	FinishReason string `json:"finish_reason,omitempty"`
+	// Usage is the token usage of the chat response, whether usage exists depends on whether the chat model implementation returns.
+	Usage *TokenUsage `json:"usage,omitempty"`
+	// LogProbs is Log probability information.
+	LogProbs *LogProbs `json:"logprobs,omitempty"`
+}
+```
+
+
+
+##### 公共 Option
+
+Model 组件提供了一组公共 Option 用于配置模型行为：
+
+> 代码位置：eino/components/model/option.go
+
+```go
+type Options struct {
+    // Temperature 控制输出的随机性
+    Temperature *float32
+    // MaxTokens 控制生成的最大 token 数量
+    MaxTokens *int
+    // Model 指定使用的模型名称
+    Model *string
+    // TopP 控制输出的多样性
+    TopP *float32
+    // Stop 指定停止生成的条件
+    Stop []string
+}
+
+```
+
+可以通过以下方式设置 Option：
+
+```go
+// 设置温度
+WithTemperature(temperature float32) Option
+
+// 设置最大 token 数
+WithMaxTokens(maxTokens int) Option
+
+// 设置模型名称
+WithModel(name string) Option
+
+// 设置 top_p 值
+WithTopP(topP float32) Option
+
+// 设置停止词
+WithStop(stop []string) Option
+
+```
+
+
+
+#### 使用方式
+
+##### 单独使用
+
+```go
+import (
+    "context"
+    "fmt"
+    "io"
+
+    "github.com/cloudwego/eino-ext/components/model/openai"
+    "github.com/cloudwego/eino/components/model"
+    "github.com/cloudwego/eino/schema"
+)
+
+// 初始化模型 (以openai为例)
+cm, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+    // 配置参数
+})
+
+// 准备输入消息
+messages := []*schema.Message{
+    {
+       Role:    schema.System,
+       Content: "你是一个有帮助的助手。",
+    },
+    {
+       Role:    schema.User,
+       Content: "你好！",
+    },
+}
+
+// 生成响应
+response, err := cm.Generate(ctx, messages, model.WithTemperature(0.8))
+
+// 响应处理
+fmt.Print(response.Content)
+
+// 流式生成
+streamResult, err := cm.Stream(ctx, messages)
+
+defer streamResult.Close()
+
+for {
+    chunk, err := streamResult.Recv()
+    if err == io.EOF {
+       break
+    }
+    if err != nil {
+       // 错误处理
+    }
+    // 响应片段处理
+    fmt.Print(chunk.Content)
+}
+
+```
+
+
+
+##### 在编排中使用
+
+```go
+import (
+    "github.com/cloudwego/eino/schema"
+    "github.com/cloudwego/eino/compose"
+)
+
+/*** 初始化ChatModel
+* cm, err := xxx
+*/
+
+// 在 Chain 中使用
+c := compose.NewChain[[]*schema.Message, *schema.Message]()
+c.AppendChatModel(cm)
+
+
+// 在 Graph 中使用
+g := compose.NewGraph[[]*schema.Message, *schema.Message]()
+g.AddChatModelNode("model_node", cm)
+
+```
+
+
+
+#### **已有实现**
+
+1. OpenAI ChatModel: 使用 OpenAI 的 GPT 系列模型 [ChatModel - OpenAI](https://www.cloudwego.io/zh/docs/eino/ecosystem_integration/chat_model/chat_model_openai)
+2. Ollama ChatModel: 使用 Ollama 本地模型 [ChatModel - Ollama](https://www.cloudwego.io/zh/docs/eino/ecosystem_integration/chat_model/chat_model_ollama)
+3. ARK ChatModel: 使用 ARK 平台的模型服务 [ChatModel - ARK](https://www.cloudwego.io/zh/docs/eino/ecosystem_integration/chat_model/chat_model_ark)
+4. 更多查看： [Eino ChatModel](https://www.cloudwego.io/zh/docs/eino/ecosystem_integration/chat_model/)
+
+
+
+#### 自行实现参考
+
+实现自定义的 ChatModel 组件时，需要注意以下几点：
+
+1. 注意要实现公共的 option
+2. 注意实现 callback 机制
+3. 在流式输出时记得完成输出后要 close writer
+
+##### Option 机制
+
+自定义 ChatModel 如果需要公共 Option 以外的 Option，可以利用组件抽象的工具函数实现自定义的 Option，例如：
+
+```go
+import (
+    "time"
+
+    "github.com/cloudwego/eino/components/model"
+)
+
+// 定义 Option 结构体
+type MyChatModelOptions struct {
+    Options    *model.Options
+    RetryCount int
+    Timeout    time.Duration
+}
+
+// 定义 Option 函数
+func WithRetryCount(count int) model.Option {
+    return model.WrapImplSpecificOptFn(func(o *MyChatModelOptions) {
+       o.RetryCount = count
+    })
+}
+==》闭包函数
+
+func WithTimeout(timeout time.Duration) model.Option {
+    return model.WrapImplSpecificOptFn(func(o *MyChatModelOptions) {
+       o.Timeout = timeout
+    })
+}
+
+```
+
+##### Callback 处理
+
+ChatModel 实现**需要在适当的时机触发回调**，以下结构由 ChatModel 组件定义：
+
+```go
+import (
+    "github.com/cloudwego/eino/schema"
+)
+
+// 定义回调输入输出
+type CallbackInput struct {
+    Messages    []*schema.Message
+    Model       string
+    Temperature *float32
+    MaxTokens   *int
+    Extra       map[string]any
+}
+
+type CallbackOutput struct {
+    Message    *schema.Message
+    TokenUsage *schema.TokenUsage
+    Extra      map[string]any
+}
+```
+
+
+
+##### 完整实现示例
+
+```go
+import (
+    "context"
+    "errors"
+    "net/http"
+    "time"
+
+    "github.com/cloudwego/eino/callbacks"
+    "github.com/cloudwego/eino/components/model"
+    "github.com/cloudwego/eino/schema"
+)
+
+type MyChatModel struct {
+    client     *http.Client
+    apiKey     string
+    baseURL    string
+    model      string
+    timeout    time.Duration
+    retryCount int
+}
+
+type MyChatModelConfig struct {
+    APIKey string
+}
+
+func NewMyChatModel(config *MyChatModelConfig) (*MyChatModel, error) {
+    if config.APIKey == "" {
+       return nil, errors.New("api key is required")
+    }
+
+    return &MyChatModel{
+       client: &http.Client{},
+       apiKey: config.APIKey,
+    }, nil
+}
+
+func (m *MyChatModel) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+    // 1. 处理选项
+    options := &MyChatModelOptions{
+       Options: &model.Options{
+          Model: &m.model,
+       },
+       RetryCount: m.retryCount,
+       Timeout:    m.timeout,
+    }
+    options.Options = model.GetCommonOptions(options.Options, opts...)
+    options = model.GetImplSpecificOptions(options, opts...)
+
+    // 2. 开始生成前的回调
+    ctx = callbacks.OnStart(ctx, &model.CallbackInput{
+       Messages: messages,
+       Config: &model.Config{
+          Model: *options.Options.Model,
+       },
+    })
+
+    // 3. 执行生成逻辑
+    response, err := m.doGenerate(ctx, messages, options)
+
+    // 4. 处理错误和完成回调
+    if err != nil {
+       ctx = callbacks.OnError(ctx, err)
+       return nil, err
+    }
+
+    ctx = callbacks.OnEnd(ctx, &model.CallbackOutput{
+       Message: response,
+    })
+
+    return response, nil
+}
+
+func (m *MyChatModel) Stream(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+    // 1. 处理选项
+    options := &MyChatModelOptions{
+       Options: &model.Options{
+          Model: &m.model,
+       },
+       RetryCount: m.retryCount,
+       Timeout:    m.timeout,
+    }
+    options.Options = model.GetCommonOptions(options.Options, opts...)
+    options = model.GetImplSpecificOptions(options, opts...)
+
+    // 2. 开始流式生成前的回调
+    ctx = callbacks.OnStart(ctx, &model.CallbackInput{
+       Messages: messages,
+       Config: &model.Config{
+          Model: *options.Options.Model,
+       },
+    })
+
+    // 3. 创建流式响应
+    // Pipe产生一个StreamReader和一个StreamWrite，向StreamWrite中写入可以从StreamReader中读到，二者并发安全。
+    // 实现中异步向StreamWrite中写入生成内容，返回StreamReader作为返回值
+    // ***StreamReader是一个数据流，仅可读一次，组件自行实现Callback时，既需要通过OnEndWithCallbackOutput向callback传递数据流，也需要向返回一个数据流，需要对数据流进行一次拷贝
+    // 考虑到此种情形总是需要拷贝数据流，OnEndWithCallbackOutput函数会在内部拷贝并返回一个未被读取的流
+    // 以下代码演示了一种流处理方式，处理方式不唯一
+    sr, sw := schema.Pipe[*model.CallbackOutput](1)
+
+    // 4. 启动异步生成
+    go func() {
+       defer sw.Close()
+
+       // 流式写入
+       m.doStream(ctx, messages, options, sw)
+    }()
+
+    // 5. 完成回调
+    _, nsr := callbacks.OnEndWithStreamOutput(ctx, sr)
+
+    return schema.StreamReaderWithConvert(nsr, func(t *model.CallbackOutput) (*schema.Message, error) {
+       return t.Message, nil
+    }), nil
+}
+
+func (m *MyChatModel)  WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+    // 实现工具绑定逻辑
+    return nil, nil
+}
+
+func (m *MyChatModel) doGenerate(ctx context.Context, messages []*schema.Message, opts *MyChatModelOptions) (*schema.Message, error) {
+    // 实现生成逻辑
+    return nil, nil
+}
+
+func (m *MyChatModel) doStream(ctx context.Context, messages []*schema.Message, opts *MyChatModelOptions, sr *schema.StreamWriter[*model.CallbackOutput]) {
+    // 流式生成文本写入sr中
+    return
+}
+
+```
+
+
+
+### ChatTemplate 使用说明
+
+
+
+#### **基本介绍**
+
+Prompt 组件是一个用于处理和格式化提示模板的组件。它的主要作用是将用户提供的变量值填充到预定义的消息模板中，生成用于与语言模型交互的标准消息格式。这个组件可用于以下场景：
+
+- 构建结构化的系统提示
+- 处理多轮对话的模板 (包括 history)
+- 实现可复用的提示模式
+
+
+
+#### **组件定义**
+
+##### **接口定义**
+
+> 代码位置：eino/components/prompt/interface.go
+
+```go
+type ChatTemplate interface {
+    Format(ctx context.Context, vs map[string]any, opts ...Option) ([]*schema.Message, error)
+}
+```
+
+**Format 方法**
+
+- 功能：将变量值填充到消息模板中
+- 参数：
+  - ctx：上下文对象，用于传递请求级别的信息，同时也用于传递 Callback Manager
+  - vs：变量值映射，用于填充模板中的占位符
+  - opts：可选参数，用于配置格式化行为
+- 返回值：
+  - `[]*schema.Message`：格式化后的消息列表
+  - error：格式化过程中的错误信息
+
+
+
+#### **内置模板化方式**
+
+Prompt 组件内置支持三种模板化方式：
+
+1. FString 格式 (schema.FString)
+   - 使用 `{variable}` 语法进行变量替换
+   - 简单直观，适合基础文本替换场景
+   - 示例：`"你是一个{role}，请帮我{task}。"`
+2. GoTemplate 格式 (schema.GoTemplate)
+   - 使用 Go 标准库的 text/template 语法
+   - 支持条件判断、循环等复杂逻辑
+   - 示例：`"{{if .expert}}作为专家{{end}}请{{.action}}"`
+3. Jinja2 格式 (schema.Jinja2)
+   - 使用 Jinja2 模板语法
+   - 示例：`"{% if level == 'expert' %}以专家的角度{% endif %}分析{{topic}}"`
+
+#### **公共 Option**
+
+Prompt 组件使用 Option 来定义可选参数， ChatTemplate 没有公共的 option 抽象。每个具体的实现可以定义自己的特定 Option，通过 WrapImplSpecificOptFn 函数包装成统一的 Option 类型。
+
+
+
+### **使用方式**
+
+ChatTemplate 一般用于 ChatModel 之前做上下文准备的。
+
+#### 创建方法
+
+- ```
+  prompt.FromMessages()
+  ```
+
+  - 用于把多个 message 变成一个 chat template。
+
+- ```
+  schema.Message{}
+  ```
+
+  - schema.Message 是实现了 Format 接口的结构体，因此可直接构建 `schema.Message{}` 作为 template
+
+- ```
+  schema.SystemMessage()
+  ```
+
+  - 此方法是构建 role 为 “system” 的 message 快捷方法
+
+- ```
+  schema.AssistantMessage()
+  ```
+
+  - 此方法是构建 role 为 “assistant” 的 message 快捷方法
+
+- ```
+  schema.UserMessage()
+  ```
+
+  - 此方法是构建 role 为 “user” 的 message 快捷方法
+
+- ```
+  schema.ToolMessage()
+  ```
+
+  - 此方法是构建 role 为 “tool” 的 message 快捷方法
+
+- ```
+  schema.MessagesPlaceholder()
+  ```
+
+  - 可用于把一个 `[]*schema.Message` 插入到 message 列表中，常用于插入历史对话
+
+
+
+#### **单独使用**
+
+```go
+import (
+    "github.com/cloudwego/eino/components/prompt"
+    "github.com/cloudwego/eino/schema"
+)
+
+// 创建模板
+template := prompt.FromMessages(schema.FString,
+    schema.SystemMessage("你是一个{role}。"),
+    schema.MessagesPlaceholder("history_key", false),
+    &schema.Message{
+        Role:    schema.User,
+        Content: "请帮我{task}。",
+    },
+)
+
+// 准备变量
+variables := map[string]any{
+    "role": "专业的助手",
+    "task": "写一首诗",
+    "history_key": []*schema.Message{{Role: schema.User, Content: "告诉我油画是什么?"}, {Role: schema.Assistant, Content: "油画是xxx"}},
+}
+
+// 格式化模板
+messages, err := template.Format(context.Background(), variables)
+```
+
+
+
+#### **在编排中使用**
+
+```go
+import (
+    "github.com/cloudwego/eino/components/prompt"
+    "github.com/cloudwego/eino/schema"
+    "github.com/cloudwego/eino/compose"
+)
+
+// 在 Chain 中使用
+chain := compose.NewChain[map[string]any, []*schema.Message]()
+chain.AppendChatTemplate(template)
+
+// 编译并运行
+runnable, err := chain.Compile()
+if err != nil {
+    return err
+}
+result, err := runnable.Invoke(ctx, variables)
+
+// 在 Graph 中使用
+graph := compose.NewGraph[map[string]any, []*schema.Message]()
+graph.AddChatTemplateNode("template_node", template)
+```
+
+
+
+#### 从前驱节点的输出中获取数据
+
+在 AddNode 时，可以通过添加 WithOutputKey 这个 Option 来把节点的输出转成 Map：
+
+```go
+// 这个节点的输出，会从 string 改成 map[string]any，
+// 且 map 中只有一个元素，key 是 your_output_key，value 是实际的的节点输出的 string
+graph.AddLambdaNode("your_node_key", compose.InvokableLambda(func(ctx context.Context, input []*schema.Message) (str string, err error) {
+    // your logic
+    return
+}), compose.WithOutputKey("your_output_key"))
+
+```
+
+把前驱节点的输出转成 map[string]any 并设置好 key 后，在后置的 ChatTemplate 节点中使用该 key 对应的 value。
+
+
+
+### **Option 和 Callback 使用**
+
+#### **Callback 使用示例**
+
+```go
+import (
+    "context"
+
+    callbackHelper "github.com/cloudwego/eino/utils/callbacks"
+    "github.com/cloudwego/eino/callbacks"
+    "github.com/cloudwego/eino/compose"
+    "github.com/cloudwego/eino/components/prompt"
+)
+
+// 创建 callback handler
+handler := &callbackHelper.PromptCallbackHandler{
+    OnStart: func(ctx context.Context, info *callbacks.RunInfo, input *prompt.CallbackInput) context.Context {
+        fmt.Printf("开始格式化模板，变量: %v\n", input.Variables)
+        return ctx
+    },
+    OnEnd: func(ctx context.Context, info *callbacks.RunInfo, output *prompt.CallbackOutput) context.Context {
+        fmt.Printf("模板格式化完成，生成消息数量: %d\n", len(output.Result))
+        return ctx
+    },
+}
+
+// 使用 callback handler
+helper := callbackHelper.NewHandlerHelper().
+    Prompt(handler).
+    Handler()
+
+// 在运行时使用
+runnable, err := chain.Compile()
+if err != nil {
+    return err
+}
+result, err := runnable.Invoke(ctx, variables, compose.WithCallbacks(helper))
+
+```
+
+
+
+### **自行实现参考**
+
+#### Option **机制**
+
+若有需要，组件实现者可实现自定义 prompt option：
+
+```go
+import (
+    "github.com/cloudwego/eino/components/prompt"
+)
+
+// 定义 Option 结构体
+type MyPromptOptions struct {
+    StrictMode bool
+    DefaultValues map[string]string
+}
+
+// 定义 Option 函数
+func WithStrictMode(strict bool) prompt.Option {
+    return prompt.WrapImplSpecificOptFn(func(o *MyPromptOptions) {
+        o.StrictMode = strict
+    })
+}
+
+func WithDefaultValues(values map[string]string) prompt.Option {
+    return prompt.WrapImplSpecificOptFn(func(o *MyPromptOptions) {
+        o.DefaultValues = values
+    })
+}
+
+```
+
+
+
+#### **Callback 处理**
+
+Prompt 实现需要在适当的时机触发回调，以下结构是组件定义好的：
+
+> 代码位置：eino/components/prompt/callback_extra.go
+
+```go
+// 定义回调输入输出
+type CallbackInput struct {
+    Variables map[string]any
+    Templates []schema.MessagesTemplate
+    Extra map[string]any
+}
+
+type CallbackOutput struct {
+    Result []*schema.Message
+    Templates []schema.MessagesTemplate
+    Extra map[string]any
+}
+```
+
+#### **完整实现示例**
+
+```go
+type MyPrompt struct {
+    templates []schema.MessagesTemplate
+    formatType schema.FormatType
+    strictMode bool
+    defaultValues map[string]string
+}
+
+func NewMyPrompt(config *MyPromptConfig) (*MyPrompt, error) {
+    return &MyPrompt{
+        templates: config.Templates,
+        formatType: config.FormatType,
+        strictMode: config.DefaultStrictMode,
+        defaultValues: config.DefaultValues,
+    }, nil
+}
+
+func (p *MyPrompt) Format(ctx context.Context, vs map[string]any, opts ...prompt.Option) ([]*schema.Message, error) {
+    // 1. 处理 Option
+    options := &MyPromptOptions{
+        StrictMode: p.strictMode,
+        DefaultValues: p.defaultValues,
+    }
+    options = prompt.GetImplSpecificOptions(options, opts...)
+    
+    // 2. 获取 callback manager
+    cm := callbacks.ManagerFromContext(ctx)
+    
+    // 3. 开始格式化前的回调
+    ctx = cm.OnStart(ctx, info, &prompt.CallbackInput{
+        Variables: vs,
+        Templates: p.templates,
+    })
+    
+    // 4. 执行格式化逻辑
+    messages, err := p.doFormat(ctx, vs, options)
+    
+    // 5. 处理错误和完成回调
+    if err != nil {
+        ctx = cm.OnError(ctx, info, err)
+        return nil, err
+    }
+    
+    ctx = cm.OnEnd(ctx, info, &prompt.CallbackOutput{
+        Result: messages,
+        Templates: p.templates,
+    })
+    
+    return messages, nil
+}
+
+func (p *MyPrompt) doFormat(ctx context.Context, vs map[string]any, opts *MyPromptOptions) ([]*schema.Message, error) {
+    // 实现自己定义逻辑
+    return messages, nil
+}
+
+```
+
+
+
+
+
+## Chain & Graph & Workflow 编排功能
+
+在大模型应用中，`Components` 组件是提供 『原子能力』的最小单元，比如：
+
+- `ChatModel` 提供了大模型的对话能力
+- `Embedding` 提供了基于语义的文本向量化能力
+- `Retriever` 提供了关联内容召回的能力
+- `ToolsNode` 提供了执行外部工具的能力
+
+> 详细的组件介绍可以参考: [Eino: Components 组件](https://www.cloudwego.io/zh/docs/eino/core_modules/components)
+
+一个大模型应用，除了需要这些原子能力之外，还需要根据场景化的业务逻辑，**对这些原子能力进行组合、串联**，这就是 **『编排』**。
+
+大模型应用的开发有其自身典型的特征： 自定义的业务逻辑本身不会很复杂，几乎主要都是对『原子能力』的组合串联。
+
+**传统代码开发过程中，业务逻辑用 “代码的执行逻辑” 来表达**，
+
+迁移到大模型应用开发中时，最直接想到的方法就是 “自行调用组件，自行把结果作为下一组件的输入进行调用”。这样的结果，就是 `代码杂乱`、`很难复用`、`没有切面能力`……
+
+
+
+当开发者们追求代码『**优雅**』和『**整洁之道**』时，就发现把传统代码组织方式用到大模型应用中时有着巨大的鸿沟。
+
+Eino 的初衷是让大模型应用开发变得非常简单，就一定要让应用的代码逻辑 “简单” “直观” “优雅” “健壮”。
+
+Eino 对「编排」有着这样的洞察：
+
+- 编排要成为在业务逻辑之上的清晰的一层，**不能让业务逻辑融入到编排中**。
+- 大模型应用的核心是 “对提供原子能力的组件” 进行组合串联，**组件是编排的 “第一公民”**。
+- 抽象视角看编排：编排是在构建一张网络，数据则在这个网络中流动，网络的每个节点都对流动的数据有格式/内容的要求，一个能顺畅流动的数据网络，关键就是 “**上下游节点间的数据格式是否对齐**？”。
+- 业务场景的复杂度会反映在编排产物的复杂性上，只有**横向的治理能力**才能让复杂场景不失控。
+- 大模型是会持续保持高速发展的，大模型应用也是，只有**具备扩展能力的应用才拥有生命力**。
+
+于是，Eino 提供了 “基于 Graph 模型 (node + edge) 的，以**组件**为原子节点的，以**上下游类型对齐**为基础的编排” 的解决方案。
+
+具体来说，实现了如下特性：
+
+- 一切以 “组件” 为核心，规范了业务功能的封装方式，让职责划分变得清晰，让复用变成自然而然
+  - 详细信息参考：[Eino: Components 组件](https://www.cloudwego.io/zh/docs/eino/core_modules/components)
+- 业务逻辑复杂度封装到组件内部，编排层拥有更全局的视角，让**逻辑层次变得非常清晰**
+- 提供了切面能力，callback 机制支持了基于节点的统一治理能力
+  - 详细信息参考：[Eino: Callback 用户手册](https://www.cloudwego.io/zh/docs/eino/core_modules/chain_and_graph_orchestration/callback_manual)
+- 提供了 call option 的机制，扩展性是快速迭代中的系统最基本的诉求
+  - 详细信息参考：[Eino: CallOption 能力与规范](https://www.cloudwego.io/zh/docs/eino/core_modules/chain_and_graph_orchestration/call_option_capabilities)
+- 提供了 “类型对齐” 的开发方式的强化，降低开发者心智负担，把 golang 的类型安全特性发挥出来
+  - 详细信息参考：[Eino: 编排的设计理念](https://www.cloudwego.io/zh/docs/eino/core_modules/chain_and_graph_orchestration/orchestration_design_principles)
+- 提供了 “流的自动转换” 能力，让 “流” 在「编排系统的复杂性来源榜」中除名
+  - 详细信息参考：[Eino 流式编程要点](https://www.cloudwego.io/zh/docs/eino/core_modules/chain_and_graph_orchestration/stream_programming_essentials)
+
+Graph 本身是强大且语义完备的，可以用这项底层几乎绘制出所有的 “数据流动网络”，比如 “分支”、“并行”、“循环”。
+
+但 Graph 并不是没有缺点的，基于 “点” “边” 模型的 Graph 在使用时，要求开发者要使用 `graph.AddXXXNode()` 和 `graph.AddEdge()` 两个接口来创建一个数据通道，**强大但是略显复杂**。
+
+而在现实的大多数业务场景中，往往仅需要 “按顺序串联” 即可，因此，**Eino 封装了接口更易于使用的 `Chain`**。
+
+Chain 是对 Graph 的封装，除了 “环” 之外，Chain 暴露了几乎所有 Graph 的能力。
+
+
+
+### Chain/Graph 编排介绍
+
+
+
+> 本文所有代码样例都在：https://github.com/cloudwego/eino-examples/tree/main/compose
+
+#### Graph 编排
+
+##### Graph
+
+
+
+#### Chain
+
+> Chain 可以视为是 Graph 的简化封装
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "math/rand"
+    "os"
+
+    "github.com/cloudwego/eino-ext/components/model/openai"
+    "github.com/cloudwego/eino/components/prompt"
+    "github.com/cloudwego/eino/compose"
+    "github.com/cloudwego/eino/schema"
+
+    "github.com/cloudwego/eino-examples/internal/gptr"
+    "github.com/cloudwego/eino-examples/internal/logs"
+)
+
+func main() {
+    openAPIBaseURL := os.Getenv("OPENAI_BASE_URL")
+    openAPIAK := os.Getenv("OPENAI_API_KEY")
+    modelName := os.Getenv("MODEL_NAME")
+
+    ctx := context.Background()
+    // build branch func
+    const randLimit = 2
+    branchCond := func(ctx context.Context, input map[string]any) (string, error) { // nolint: byted_all_nil_return
+       if rand.Intn(randLimit) == 1 {
+          return "b1", nil
+       }
+
+       return "b2", nil
+    }
+
+    b1 := compose.InvokableLambda(func(ctx context.Context, kvs map[string]any) (map[string]any, error) {
+       logs.Infof("hello in branch lambda 01")
+       if kvs == nil {
+          return nil, fmt.Errorf("nil map")
+       }
+
+       kvs["role"] = "cat"
+       return kvs, nil
+    })
+
+    b2 := compose.InvokableLambda(func(ctx context.Context, kvs map[string]any) (map[string]any, error) {
+       logs.Infof("hello in branch lambda 02")
+       if kvs == nil {
+          return nil, fmt.Errorf("nil map")
+       }
+
+       kvs["role"] = "dog"
+       return kvs, nil
+    })
+
+    // build parallel node
+    parallel := compose.NewParallel()
+    parallel.
+       AddLambda("role", compose.InvokableLambda(func(ctx context.Context, kvs map[string]any) (string, error) {
+          // may be change role to others by input kvs, for example (dentist/doctor...)
+          role, ok := kvs["role"].(string)
+          if !ok || role == "" {
+             role = "bird"
+          }
+
+          return role, nil
+       })).
+       AddLambda("input", compose.InvokableLambda(func(ctx context.Context, kvs map[string]any) (string, error) {
+          return "你的叫声是怎样的？", nil
+       }))
+
+    modelConf := &openai.ChatModelConfig{
+       BaseURL:     openAPIBaseURL,
+       APIKey:      openAPIAK,
+       ByAzure:     true,
+       Model:       modelName,
+       Temperature: gptr.Of(float32(0.7)),
+       APIVersion:  "2024-06-01",
+    }
+
+    // create chat model node
+    cm, err := openai.NewChatModel(context.Background(), modelConf)
+    if err != nil {
+       log.Panic(err)
+       return
+    }
+
+    rolePlayerChain := compose.NewChain[map[string]any, *schema.Message]()
+    rolePlayerChain.
+       AppendChatTemplate(prompt.FromMessages(schema.FString, schema.SystemMessage(`You are a {role}.`), schema.UserMessage(`{input}`))).
+       AppendChatModel(cm)
+
+    // =========== build chain ===========
+    chain := compose.NewChain[map[string]any, string]()
+    chain.
+       AppendLambda(compose.InvokableLambda(func(ctx context.Context, kvs map[string]any) (map[string]any, error) {
+          // do some logic to prepare kv as input val for next node
+          // just pass through
+          logs.Infof("in view lambda: %v", kvs)
+          return kvs, nil
+       })).
+       AppendBranch(compose.NewChainBranch(branchCond).AddLambda("b1", b1).AddLambda("b2", b2)). // nolint: byted_use_receiver_without_nilcheck
+       AppendPassthrough().
+       AppendParallel(parallel).
+       AppendGraph(rolePlayerChain).
+       AppendLambda(compose.InvokableLambda(func(ctx context.Context, m *schema.Message) (string, error) {
+          // do some logic to check the output or something
+          logs.Infof("in view of messages: %v", m.Content)
+          return m.Content, nil
+       }))
+
+    // compile
+    r, err := chain.Compile(ctx)
+    if err != nil {
+       log.Panic(err)
+       return
+    }
+
+    output, err := r.Invoke(context.Background(), map[string]any{})
+    if err != nil {
+       log.Panic(err)
+       return
+    }
+
+    logs.Infof("output is : %v", output)
+}
+
+```
+
+==》运行结果示例
+
+```
+[INFO] 2025-08-18 18:29:37 in view lambda: map[]
+[INFO] 2025-08-18 18:29:37 hello in branch lambda 01
+[INFO] 2025-08-18 18:30:04 in view of messages: 喵～（用优雅的猫步踱近，尾巴高高翘起）本喵的叫声可是经过严格训练的！标准三连音：「喵～呜～嗷」（突然压低声音）不过要是看到激光笔...就会变成「咪呀！！！」（炸毛跳起三尺高） 
+
+要听听不同情绪的版本吗？ 
+1. 饥饿版：「喵嗷呜——」（带着颤音的哀怨长调）
+2. 得意版：「咪~哈哈哈」（打呼噜混着胜利尾音）
+3. 装可爱版：「喵~嗯？」（突然用肉垫按住你手腕） 
+
+（突然想起什么似的甩甩尾巴）啊对了！本喵最讨厌被要求「学狗叫」...才、才不会发「汪」这种野蛮的声音呢！(╯°□°)╯
+[INFO] 2025-08-18 18:30:04 output is : 喵～（用优雅的猫步踱近，尾巴高高翘起）本喵的叫声可是经过严格训练的！标准三连音：「喵～呜～嗷」（突然压低声音）不过要是看到激光笔...就会变成「咪呀！！！」（炸毛跳起三尺高） 
+```
+
 
 
 

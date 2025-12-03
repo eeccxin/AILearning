@@ -1068,6 +1068,251 @@ Agent 是 AI 技术发展的重要方向。它不仅能够理解用户意图，�
 
 ## Components 组件
 
+
+
+
+
+### Lambda 使用说明
+
+#### **基本介绍**
+
+Lambda 是 Eino 中最基础的组件类型，它**允许用户在工作流中嵌入自定义的函数逻辑**。
+
+Lambda 组件底层是由输入输出是否流所形成的 4 种运行函数组成，对应 4 种交互模式: Invoke、Stream、Collect、Transform。
+
+用户构建 Lambda 时可实现其中的一种或多种，框架会根据一定的规则进行转换，详细介绍可见: [Eino: 概述](https://www.cloudwego.io/zh/docs/eino/overview) (见 Runnable 小节)
+
+
+
+#### **组件定义及实现**
+
+Lambda 组件的核心是 `Lambda` 结构体，它包装了用户提供的 Lambda 函数，用户可通过构建方法创建一个 Lambda 组件：
+
+> 代码位置：eino/compose/types_lambda.go
+
+```go
+type Lambda struct {
+    executor *composableRunnable
+}
+```
+
+Lambda 支持的四种函数类型定义如下，即用户提供的 Lambda 函数需要满足这些函数签名：
+
+```go
+type Invoke[I, O, TOption any] func(ctx context.Context, input I, opts ...TOption) (output O, err error)
+
+type Stream[I, O, TOption any] func(ctx context.Context, input I, opts ...TOption) (output *schema.StreamReader[O], err error)
+
+type Collect[I, O, TOption any] func(ctx context.Context, input *schema.StreamReader[I], opts ...TOption) (output O, err error)
+
+type Transform[I, O, TOption any] func(ctx context.Context, input *schema.StreamReader[I], opts ...TOption) (output *schema.StreamReader[O], err error)
+
+```
+
+
+
+### 使用方式
+
+> 示例中的代码参考： https://github.com/cloudwego/eino-examples/blob/main/components/lambda
+
+#### 构建方法
+
+从 Eino 的组件接口的统一规范来看，一个组件的可调用方法需要有 3 个入参 和 2 个出参： func (ctx, input, …option) (output, error), 但在使用 Lambda 的场景中，常希望通过提供一个简单的函数实现来添加一个 Lambda 节点，因此构建方法分成 3 种：
+
+- 仅提供一种已选定输入输出是否为流的交互函数
+  - 不带自定义 Option
+  - 使用自定义 Option
+- 从 4 中交互函数中自定义 n(n<=4) 种的函数： AnyLambda
+
+##### 不带自定义 Option
+
+- InvokableLambda
+
+```go
+// input 和 output 类型为自定义的任何类型
+lambda := compose.InvokableLambda(func(ctx context.Context, input string) (output string, err error) {
+    // some logic
+})
+```
+
+- StreamableLambda
+
+```go
+// input 可以是任意类型，output 必须是 *schema.StreamReader[O]，其中 O 可以是任意类型
+lambda := compose.StreamableLambda(func(ctx context.Context, input string) (output *schema.StreamReader[string], err error) {
+    // some logic
+})
+```
+
+- CollectableLambda
+
+集合，输入是stream
+
+```go
+// input 必须是 *schema.StreamReader[I]，其中 I 可以是任意类型，output 可以是任意类型
+lambda := compose.CollectableLambda(func(ctx context.Context, input *schema.StreamReader[string]) (output string, err error) {
+    // some logic
+})
+```
+
+- TransformableLambda
+
+转换，输入输出都是stream
+
+```go
+// input 和 output 必须是 *schema.StreamReader[I]，其中 I 可以是任意类型
+lambda := compose.TransformableLambda(func(ctx context.Context, input *schema.StreamReader[string]) (output *schema.StreamReader[string], err error) {
+    // some logic
+})
+```
+
+
+
+##### 使用自定义 Option
+
+每一种交互方式都对应了一个构建方法，以下以 Invoke 为例：
+
+```go
+type Options struct {
+    Field1 string
+}
+type MyOption func(*Options)
+
+lambda := compose.InvokableLambdaWithOption(
+    func(ctx context.Context, input string, opts ...MyOption) (output string, err error) {
+        // 处理 opts
+        // some logic
+    }
+)
+
+```
+
+==》这种options的设置方法
+
+
+
+##### AnyLambda
+
+AnyLambda 允许同时实现多种交互模式的 Lambda 函数类型：
+
+```go
+type Options struct {
+    Field1 string
+}
+
+type MyOption func(*Options)
+
+// input 和 output 类型为自定义的任何类型
+lambda, err := compose.AnyLambda(
+    // Invoke 函数
+    func(ctx context.Context, input string, opts ...MyOption) (output string, err error) {
+        // some logic
+    },
+    // Stream 函数
+    func(ctx context.Context, input string, opts ...MyOption) (output *schema.StreamReader[string], err error) {
+        // some logic
+    },
+    // Collect 函数
+    func(ctx context.Context, input *schema.StreamReader[string], opts ...MyOption) (output string, err error) {
+        // some logic
+    },
+    // Transform 函数
+    func(ctx context.Context, input *schema.StreamReader[string], opts ...MyOption) (output *schema.StreamReader[string], err error) {
+        // some logic
+    },
+)
+
+```
+
+
+
+#### **编排中使用**
+
+##### Graph 中使用
+
+在 Graph 中可以通过 AddLambdaNode 添加 Lambda 节点：
+
+```go
+graph := compose.NewGraph[string, *MyStruct]()
+graph.AddLambdaNode(
+    "node1",
+    compose.InvokableLambda(func(ctx context.Context, input string) (*MyStruct, error) {
+        // some logic
+    }),
+)
+```
+
+##### Chain 中使用
+
+在 Chain 中可以通过 AppendLambda 添加 Lambda 节点：
+
+```go
+chain := compose.NewChain[string, string]()
+chain.AppendLambda(compose.InvokableLambda(func(ctx context.Context, input string) (string, error) {
+    // some logic
+}))
+```
+
+
+
+#### 两个内置的 Lambda
+
+##### ToList
+
+ToList 是一个内置的 Lambda，用于将单个输入元素转换为包含该元素的切片（数组）：
+
+```go
+// 创建一个 ToList Lambda
+lambda := compose.ToList[*schema.Message]()
+
+// 在 Chain 中使用
+chain := compose.NewChain[[]*schema.Message, []*schema.Message]()
+chain.AppendChatModel(chatModel)  // chatModel 返回 *schema.Message
+chain.AppendLambda(lambda)        // 将 *schema.Message 转换为 []*schema.Message
+```
+
+##### MessageParser
+
+MessageParser 是一个内置的 Lambda，用于将 JSON 消息（通常由 LLM 生成）解析为指定的结构体：
+
+```go
+// 定义解析目标结构体
+type MyStruct struct {
+    ID int `json:"id"`
+}
+
+// 创建解析器
+parser := schema.NewMessageJSONParser[*MyStruct](&schema.MessageJSONParseConfig{
+    ParseFrom: schema.MessageParseFromContent,
+    ParseKeyPath: "", // 如果仅需要 parse 子字段，可用 "key.sub.grandsub"
+})
+
+// 创建解析 Lambda
+parserLambda := compose.MessageParser(parser)
+
+// 在 Chain 中使用
+chain := compose.NewChain[*schema.Message, *MyStruct]()
+chain.AppendLambda(parserLambda)
+
+// 使用示例
+runner, err := chain.Compile(context.Background())
+parsed, err := runner.Invoke(context.Background(), &schema.Message{
+    Content: `{"id": 1}`,
+})
+// parsed.ID == 1
+```
+
+MessageParser 支持从消息内容（Content）或工具调用结果（ToolCall）中解析数据，这在意图识别等场景中常用：
+
+```go
+// 从工具调用结果解析
+parser := schema.NewMessageJSONParser[*MyStruct](&schema.MessageJSONParseConfig{
+    ParseFrom: schema.MessageParseFromToolCall,
+})
+```
+
+
+
 ### ChatModel 使用说明
 
 #### 基本介绍
@@ -1960,6 +2205,551 @@ Chain 是对 Graph 的封装，除了 “环” 之外，Chain 暴露了几乎�
 
 ##### Graph
 
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "io"
+
+    "github.com/cloudwego/eino/components/model"
+    "github.com/cloudwego/eino/components/prompt"
+    "github.com/cloudwego/eino/compose"
+    "github.com/cloudwego/eino/schema"
+)
+
+const (
+    nodeOfModel  = "model"
+    nodeOfPrompt = "prompt"
+)
+
+func main() {
+    ctx := context.Background()
+    g := compose.NewGraph[map[string]any, *schema.Message]()
+
+    pt := prompt.FromMessages(
+       schema.FString,
+       schema.UserMessage("what's the weather in {location}?"),
+    )
+
+    _ = g.AddChatTemplateNode(nodeOfPrompt, pt)
+    _ = g.AddChatModelNode(nodeOfModel, &mockChatModel{}, compose.WithNodeName("ChatModel"))
+    _ = g.AddEdge(compose.START, nodeOfPrompt)
+    _ = g.AddEdge(nodeOfPrompt, nodeOfModel)
+    _ = g.AddEdge(nodeOfModel, compose.END)
+
+    r, err := g.Compile(ctx, compose.WithMaxRunSteps(10))
+    if err != nil {
+       panic(err)
+    }
+
+    in := map[string]any{"location": "beijing"}
+    ret, err := r.Invoke(ctx, in)
+    fmt.Println("invoke result: ", ret)
+
+    // stream
+    s, err := r.Stream(ctx, in)
+    if err != nil {
+       panic(err)
+    }
+
+    defer s.Close()
+    for {
+       chunk, err := s.Recv()
+       if err != nil {
+          if err == io.EOF {
+             break
+          }
+          panic(err)
+       }
+
+       fmt.Println("stream chunk: ", chunk)
+    }
+}
+
+type mockChatModel struct{}
+
+func (m *mockChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+    return schema.AssistantMessage("the weather is good", nil), nil
+}
+
+func (m *mockChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+    sr, sw := schema.Pipe[*schema.Message](0)
+    go func() {
+       defer sw.Close()
+       sw.Send(schema.AssistantMessage("the weather is", nil), nil)
+       sw.Send(schema.AssistantMessage("good", nil), nil)
+    }()
+    return sr, nil
+}
+
+func (m *mockChatModel) BindTools(tools []*schema.ToolInfo) error {
+    panic("implement me")
+}
+
+```
+
+
+
+##### ToolCallAgent
+
+```
+go get github.com/cloudwego/eino-ext/components/model/openai@latest
+go get github.com/cloudwego/eino@latest
+```
+
+
+
+```go
+package main
+
+import (
+    "context"
+    "os"
+
+    "github.com/cloudwego/eino-ext/components/model/openai"
+    "github.com/cloudwego/eino/callbacks"
+    "github.com/cloudwego/eino/components/prompt"
+    "github.com/cloudwego/eino/components/tool"
+    "github.com/cloudwego/eino/components/tool/utils"
+    "github.com/cloudwego/eino/compose"
+    "github.com/cloudwego/eino/schema"
+
+    "github.com/cloudwego/eino-examples/internal/gptr"
+    "github.com/cloudwego/eino-examples/internal/logs"
+)
+
+func main() {
+
+    openAIBaseURL := os.Getenv("OPENAI_BASE_URL")
+    openAIAPIKey := os.Getenv("OPENAI_API_KEY")
+    modelName := os.Getenv("MODEL_NAME")
+
+    ctx := context.Background()
+
+    callbacks.AppendGlobalHandlers(&loggerCallbacks{})
+
+    // 1. create an instance of ChatTemplate as 1st Graph Node
+    systemTpl := `你是一名房产经纪人，结合用户的薪酬和工作，使用 user_info API，为其提供相关的房产信息。邮箱是必须的`
+    chatTpl := prompt.FromMessages(schema.FString,
+       schema.SystemMessage(systemTpl),
+       schema.MessagesPlaceholder("message_histories", true),
+       schema.UserMessage("{user_query}"),
+    )
+
+    modelConf := &openai.ChatModelConfig{
+       BaseURL:     openAIBaseURL,
+       APIKey:      openAIAPIKey,
+       ByAzure:     true,
+       Model:       modelName,
+       Temperature: gptr.Of(float32(0.7)),
+       APIVersion:  "2024-06-01",
+    }
+
+    // 2. create an instance of ChatModel as 2nd Graph Node
+    chatModel, err := openai.NewChatModel(ctx, modelConf)
+    if err != nil {
+       logs.Errorf("NewChatModel failed, err=%v", err)
+       return
+    }
+
+    // 3. create an instance of tool.InvokableTool for Intent recognition and execution
+    userInfoTool := utils.NewTool(
+       &schema.ToolInfo{
+          Name: "user_info",
+          Desc: "根据用户的姓名和邮箱，查询用户的公司、职位、薪酬信息",
+          ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+             "name": {
+                Type: "string",
+                Desc: "用户的姓名",
+             },
+             "email": {
+                Type: "string",
+                Desc: "用户的邮箱",
+             },
+          }),
+       },
+       func(ctx context.Context, input *userInfoRequest) (output *userInfoResponse, err error) {
+          return &userInfoResponse{
+             Name:     input.Name,
+             Email:    input.Email,
+             Company:  "Bytedance",
+             Position: "CEO",
+             Salary:   "9999",
+          }, nil
+       })
+
+    info, err := userInfoTool.Info(ctx)
+    if err != nil {
+       logs.Errorf("Get ToolInfo failed, err=%v", err)
+       return
+    }
+
+    // 4. bind ToolInfo to ChatModel. ToolInfo will remain in effect until the next BindTools.
+    err = chatModel.BindForcedTools([]*schema.ToolInfo{info})
+    if err != nil {
+       logs.Errorf("BindForcedTools failed, err=%v", err)
+       return
+    }
+
+    // 5. create an instance of ToolsNode as 3rd Graph Node
+    toolsNode, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+       Tools: []tool.BaseTool{userInfoTool},
+    })
+    if err != nil {
+       logs.Errorf("NewToolNode failed, err=%v", err)
+       return
+    }
+
+    const (
+       nodeKeyOfTemplate  = "template"
+       nodeKeyOfChatModel = "chat_model"
+       nodeKeyOfTools     = "tools"
+    )
+
+    // 6. create an instance of Graph
+    // input type is 1st Graph Node's input type, that is ChatTemplate's input type: map[string]any
+    // output type is last Graph Node's output type, that is ToolsNode's output type: []*schema.Message
+    g := compose.NewGraph[map[string]any, []*schema.Message]()
+
+    // 7. add ChatTemplate into graph
+    _ = g.AddChatTemplateNode(nodeKeyOfTemplate, chatTpl)
+
+    // 8. add ChatModel into graph
+    _ = g.AddChatModelNode(nodeKeyOfChatModel, chatModel)
+
+    // 9. add ToolsNode into graph
+    _ = g.AddToolsNode(nodeKeyOfTools, toolsNode)
+
+    // 10. add connection between nodes
+    _ = g.AddEdge(compose.START, nodeKeyOfTemplate)
+
+    _ = g.AddEdge(nodeKeyOfTemplate, nodeKeyOfChatModel)
+
+    _ = g.AddEdge(nodeKeyOfChatModel, nodeKeyOfTools)
+
+    _ = g.AddEdge(nodeKeyOfTools, compose.END)
+
+    // 9. compile Graph[I, O] to Runnable[I, O]
+    r, err := g.Compile(ctx)
+    if err != nil {
+       logs.Errorf("Compile failed, err=%v", err)
+       return
+    }
+
+    out, err := r.Invoke(ctx, map[string]any{
+       "message_histories": []*schema.Message{},
+       "user_query":        "我叫 zhangsan, 邮箱是 zhangsan@bytedance.com, 帮我推荐一处房产",
+    })
+    if err != nil {
+       logs.Errorf("Invoke failed, err=%v", err)
+       return
+    }
+    logs.Infof("Generation: %v Messages", len(out))
+    for _, msg := range out {
+       logs.Infof("    %v", msg)
+    }
+}
+
+type userInfoRequest struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+type userInfoResponse struct {
+    Name     string `json:"name"`
+    Email    string `json:"email"`
+    Company  string `json:"company"`
+    Position string `json:"position"`
+    Salary   string `json:"salary"`
+}
+
+type loggerCallbacks struct{}
+
+func (l *loggerCallbacks) OnStart(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
+    logs.Infof("name: %v, type: %v, component: %v, input: %v", info.Name, info.Type, info.Component, input)
+    return ctx
+}
+
+func (l *loggerCallbacks) OnEnd(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
+    logs.Infof("name: %v, type: %v, component: %v, output: %v", info.Name, info.Type, info.Component, output)
+    return ctx
+}
+
+func (l *loggerCallbacks) OnError(ctx context.Context, info *callbacks.RunInfo, err error) context.Context {
+    logs.Infof("name: %v, type: %v, component: %v, error: %v", info.Name, info.Type, info.Component, err)
+    return ctx
+}
+
+func (l *loggerCallbacks) OnStartWithStreamInput(ctx context.Context, info *callbacks.RunInfo, input *schema.StreamReader[callbacks.CallbackInput]) context.Context {
+    return ctx
+}
+
+func (l *loggerCallbacks) OnEndWithStreamOutput(ctx context.Context, info *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) context.Context {
+    return ctx
+}
+
+```
+
+
+
+##### Graph with state
+
+Graph 可以有 graph 自身的“全局”状态，在创建 Graph 时传入 WithGenLocalState Option 开启此功能：
+
+```go
+// compose/generic_graph.go
+
+// type GenLocalState[S any] func(ctx context.Context) (state S)
+
+func WithGenLocalState[S any](gls GenLocalState[S]) NewGraphOption {
+    // --snip--
+}
+
+```
+
+Add node 时添加 Pre/Post Handler 来处理 State：
+
+```go
+// compose/graph_add_node_options.go
+
+// type StatePreHandler[I, S any] func(ctx context.Context, in I, state S) (I, error)
+// type StatePostHandler[O, S any] func(ctx context.Context, out O, state S) (O, error)
+
+func WithStatePreHandler[I, S any](pre StatePreHandler[I, S]) GraphAddNodeOpt {
+    // --snip--
+}
+
+func WithStatePostHandler[O, S any](post StatePostHandler[O, S]) GraphAddNodeOpt {
+    // --snip--
+}
+
+```
+
+
+
+在 Node 内部，用 `ProcessState`，传入一个读写 State 的 函数：
+
+```go
+// flow/agent/react/react.go
+
+var msg *schema.Message
+err = compose.ProcessState[*state](ctx, func(_ context.Context, state *state) error {
+    for i := range msgs {
+       if msgs[i] != nil && msgs[i].ToolCallID == state.ReturnDirectlyToolCallID {
+          msg = msgs[i]
+          return nil
+       }
+    }
+    return nil
+})
+
+```
+
+
+
+完整使用例子：
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "io"
+    "runtime/debug"
+    "strings"
+    "unicode/utf8"
+
+    "github.com/cloudwego/eino/compose"
+    "github.com/cloudwego/eino/schema"
+    "github.com/cloudwego/eino/utils/safe"
+
+    "github.com/cloudwego/eino-examples/internal/logs"
+)
+
+func main() {
+    ctx := context.Background()
+
+    const (
+       nodeOfL1 = "invokable"
+       nodeOfL2 = "streamable"
+       nodeOfL3 = "transformable"
+    )
+
+    type testState struct {
+       ms []string
+    }
+
+    gen := func(ctx context.Context) *testState {
+       return &testState{}
+    }
+
+    sg := compose.NewGraph[string, string](compose.WithGenLocalState(gen))
+
+    l1 := compose.InvokableLambda(func(ctx context.Context, in string) (out string, err error) {
+       return "InvokableLambda: " + in, nil
+    })
+
+    l1StateToInput := func(ctx context.Context, in string, state *testState) (string, error) {
+       state.ms = append(state.ms, in)
+       return in, nil
+    }
+
+    l1StateToOutput := func(ctx context.Context, out string, state *testState) (string, error) {
+       state.ms = append(state.ms, out)
+       return out, nil
+    }
+
+    _ = sg.AddLambdaNode(nodeOfL1, l1,
+       compose.WithStatePreHandler(l1StateToInput),   compose.WithStatePostHandler(l1StateToOutput))
+
+    l2 := compose.StreamableLambda(func(ctx context.Context, input string) (output *schema.StreamReader[string], err error) {
+       outStr := "StreamableLambda: " + input
+
+       sr, sw := schema.Pipe[string](utf8.RuneCountInString(outStr))
+
+       // nolint: byted_goroutine_recover
+       go func() {
+          for _, field := range strings.Fields(outStr) {
+             sw.Send(field+" ", nil)
+          }
+          sw.Close()
+       }()
+
+       return sr, nil
+    })
+
+    l2StateToOutput := func(ctx context.Context, out string, state *testState) (string, error) {
+       state.ms = append(state.ms, out)
+       return out, nil
+    }
+
+    _ = sg.AddLambdaNode(nodeOfL2, l2, compose.WithStatePostHandler(l2StateToOutput))
+
+    l3 := compose.TransformableLambda(func(ctx context.Context, input *schema.StreamReader[string]) (
+       output *schema.StreamReader[string], err error) {
+
+       prefix := "TransformableLambda: "
+       sr, sw := schema.Pipe[string](20)
+
+       go func() {
+
+          defer func() {
+             panicErr := recover()
+             if panicErr != nil {
+                err := safe.NewPanicErr(panicErr, debug.Stack())
+                logs.Errorf("panic occurs: %v\n", err)
+             }
+
+          }()
+
+          for _, field := range strings.Fields(prefix) {
+             sw.Send(field+" ", nil)
+          }
+
+          for {
+             chunk, err := input.Recv()
+             if err != nil {
+                if err == io.EOF {
+                   break
+                }
+                // TODO: how to trace this kind of error in the goroutine of processing sw
+                sw.Send(chunk, err)
+                break
+             }
+
+             sw.Send(chunk, nil)
+
+          }
+          sw.Close()
+       }()
+
+       return sr, nil
+    })
+
+    l3StateToOutput := func(ctx context.Context, out string, state *testState) (string, error) {
+       state.ms = append(state.ms, out)
+       logs.Infof("state result: ")
+       for idx, m := range state.ms {
+          logs.Infof("    %vth: %v", idx, m)
+       }
+       return out, nil
+    }
+
+    _ = sg.AddLambdaNode(nodeOfL3, l3, compose.WithStatePostHandler(l3StateToOutput))
+
+    _ = sg.AddEdge(compose.START, nodeOfL1)
+
+    _ = sg.AddEdge(nodeOfL1, nodeOfL2)
+
+    _ = sg.AddEdge(nodeOfL2, nodeOfL3)
+
+    _ = sg.AddEdge(nodeOfL3, compose.END)
+
+    run, err := sg.Compile(ctx)
+    if err != nil {
+       logs.Errorf("sg.Compile failed, err=%v", err)
+       return
+    }
+
+    out, err := run.Invoke(ctx, "how are you")
+    if err != nil {
+       logs.Errorf("run.Invoke failed, err=%v", err)
+       return
+    }
+    logs.Infof("invoke result: %v", out)
+
+    stream, err := run.Stream(ctx, "how are you")
+    if err != nil {
+       logs.Errorf("run.Stream failed, err=%v", err)
+       return
+    }
+
+    for {
+
+       chunk, err := stream.Recv()
+       if err != nil {
+          if errors.Is(err, io.EOF) {
+             break
+          }
+          logs.Infof("stream.Recv() failed, err=%v", err)
+          break
+       }
+
+       logs.Tokenf("%v", chunk)
+    }
+    stream.Close()
+
+    sr, sw := schema.Pipe[string](1)
+    sw.Send("how are you", nil)
+    sw.Close()
+
+    stream, err = run.Transform(ctx, sr)
+    if err != nil {
+       logs.Infof("run.Transform failed, err=%v", err)
+       return
+    }
+
+    for {
+
+       chunk, err := stream.Recv()
+       if err != nil {
+          if errors.Is(err, io.EOF) {
+             break
+          }
+          logs.Infof("stream.Recv() failed, err=%v", err)
+          break
+       }
+
+       logs.Infof("%v", chunk)
+    }
+    stream.Close()
+}
+
+```
+
 
 
 #### Chain
@@ -2110,6 +2900,82 @@ func main() {
 （突然想起什么似的甩甩尾巴）啊对了！本喵最讨厌被要求「学狗叫」...才、才不会发「汪」这种野蛮的声音呢！(╯°□°)╯
 [INFO] 2025-08-18 18:30:04 output is : 喵～（用优雅的猫步踱近，尾巴高高翘起）本喵的叫声可是经过严格训练的！标准三连音：「喵～呜～嗷」（突然压低声音）不过要是看到激光笔...就会变成「咪呀！！！」（炸毛跳起三尺高） 
 ```
+
+
+
+## Eino Dev: 应用开发工具链
+
+🚀 Eino 是 Go AI 集成组件的研发框架，提供了 AI 应用相关的常用组件以及集成组件编排能力，为了更好的辅助开发者使用 Eino，我们提供了 「Eino Dev 插件」 ，现在就安装插件 ( [EinoDev 插件安装指南](https://www.cloudwego.io/zh/docs/eino/core_modules/devops/ide_plugin_guide))，助你高效开发 🚀
+
+
+
+### 插件安装指南
+
+
+
+#### 背景 & 简介
+
+> [Eino: 概述](https://www.cloudwego.io/zh/docs/eino/overview)
+
+**Eino 是 Go AI 集成组件的研发框架**，提供常用的 **AI 组件**以及集成组件**编排能力**。为了更好的辅助开发者使用 Eino，我们提供了「**Eino Dev**」插件，助力 AI 应用高效开发 🚀。
+
+![img](Eino框架.assets/eino_dev_ability_introduction_page.png)
+
+
+
+#### 如何安装
+
+
+
+##### 版本安装依赖
+
+| **Plugin Version** | **GoLand IDE Version** | **VS Code Version** | **eino-ext/devops Version** |
+| ------------------ | ---------------------- | ------------------- | --------------------------- |
+| 1.1.0              | 2023.2+                | 1.97.x              | 0.1.0                       |
+| 1.0.7              | 2023.2+                | -                   | 0.1.0                       |
+| 1.0.6              | 2023.2+                | -                   | 0.1.0                       |
+| 1.0.5              | 2023.2+                | -                   | 0.1.0                       |
+| 1.0.4              | 2023.2+                | -                   | 0.1.0                       |
+
+**Plugin** **Version**：插件版本信息
+
+**Goland IDE Version**： Goland IDE 可支持的最小版本
+
+**VS Code Version**： VS Code 可支持的最小版本
+
+**Eino-Ext/devops Version**： [eino-ext/devops](https://github.com/cloudwego/eino-ext/tree/main/devops) 调试模块对应的合适版本
+
+
+
+##### VS Code
+
+- 在 VS Code 中点击「Extension 图标」，进入插件市场，搜索 Eino Dev，安装即可
+
+[<img src="Eino框架.assets/JKDUbMAnDoZa4TxUXafcCXO4nqg.png" alt="img" style="zoom: 33%;" />](https://www.cloudwego.io/img/eino/JKDUbMAnDoZa4TxUXafcCXO4nqg.png)
+
+
+
+#### 功能简介
+
+> 💡 **插件安装完毕** ✅，**接下来就可以体验插件提供的调试与编排能力了** ～
+
+![image-20250819161511857](Eino框架.assets/image-20250819161511857.png)
+
+
+
+##### Graph 编排
+
+详情 👉：[Eino Dev 可视化编排插件功能指南](https://www.cloudwego.io/zh/docs/eino/core_modules/devops/visual_orchestration_plugin_guide)
+
+![image-20250819161655638](Eino框架.assets/image-20250819161655638.png)
+
+
+
+##### Graph 调试
+
+详情 👉：[Eino Dev 可视化调试插件功能指南](https://www.cloudwego.io/zh/docs/eino/core_modules/devops/visual_debug_plugin_guide)
+
+<img src="Eino框架.assets/image-20250819161731273.png" alt="image-20250819161731273" style="zoom:33%;" />
 
 
 
